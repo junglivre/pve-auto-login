@@ -255,7 +255,7 @@ text_menu() {
 whiptail_menu() {
     local -a users selected candidates checklist_args
     local chosen index user status
-    local columns lines width height list_height max_width max_height
+    local columns lines width height list_height max_width max_height content_width prompt
     bootstrap_state
     mapfile -t selected < <(read_state)
     mapfile -t candidates < <({ local_pam_users; printf '%s\n' "${selected[@]}"; } | sed '/^$/d' | sort -u)
@@ -281,7 +281,15 @@ whiptail_menu() {
     [ "$max_width" -lt 44 ] && max_width=44
     [ "$max_height" -lt 10 ] && max_height=10
 
-    width=52
+    prompt='Select users allowed to auto-login to the host console:'
+    content_width=${#prompt}
+    for user in "${candidates[@]}"; do
+        [ $(( ${#user} + 18 )) -gt "$content_width" ] && content_width=$(( ${#user} + 18 ))
+    done
+    [ "$content_width" -lt 44 ] && content_width=44
+    width=$((content_width + 6))
+    [ "$width" -lt 50 ] && width=50
+    [ "$width" -gt 64 ] && width=64
     [ "$max_width" -lt "$width" ] && width=$max_width
     height=$(( ${#candidates[@]} + 8 ))
     [ "$height" -lt 10 ] && height=10
@@ -291,7 +299,7 @@ whiptail_menu() {
     [ "$list_height" -lt 1 ] && list_height=1
 
     if ! chosen=$(whiptail --title 'PVE automatic host-console login' \
-        --checklist 'Select users allowed to auto-login to the host console:' \
+        --checklist "$prompt" \
         "$height" "$width" "$list_height" --separate-output "${checklist_args[@]}" 3>&1 1>&2 2>&3); then
         return 0
     fi
