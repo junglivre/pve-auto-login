@@ -28,6 +28,8 @@ using it in production and test it on a non-critical node first.
 - root access
 - local PAM users with valid login shells
 - `perl`, `systemctl`, and `ssh` for cluster replication
+- optional `whiptail` for the graphical shell menu; a text-menu fallback is used
+  when it is unavailable
 - passwordless root SSH between cluster nodes for `--apply-all`
 
 ## Install
@@ -53,7 +55,8 @@ pve-auto-login --apply-all     # apply to every cluster node
 pve-auto-login --status        # inspect state
 ```
 
-The menu writes the shared allowlist and then updates the local/remote nodes.
+The menu uses `whiptail` when available and falls back to a plain shell menu
+otherwise. It writes the shared allowlist and then updates the local/remote nodes.
 After a successful patch, `pvedaemon` and `pveproxy` are restarted on affected
 nodes so the Perl module is reloaded.
 

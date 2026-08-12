@@ -210,9 +210,7 @@ show_status() {
     fi
 }
 
-menu() {
-    require_root
-    bootstrap_state
+text_menu() {
     local -a users selected candidates
     local choice index user
     mapfile -t selected < <(read_state)
@@ -250,6 +248,56 @@ menu() {
                 ;;
         esac
     done
+}
+
+whiptail_menu() {
+    local -a users selected candidates checklist_args
+    local chosen index user status
+    bootstrap_state
+    mapfile -t selected < <(read_state)
+    mapfile -t candidates < <({ local_pam_users; printf '%s\n' "${selected[@]}"; } | sed '/^$/d' | sort -u)
+    [ "${#candidates[@]}" -gt 0 ] || die "no local PAM users with a valid login shell were found"
+
+    checklist_args=()
+    for index in "${!candidates[@]}"; do
+        user=${candidates[$index]}
+        status=OFF
+        if printf '%s\n' "${selected[@]}" | grep -qxF "$user"; then
+            status=ON
+        fi
+        checklist_args+=("$user" "Local PAM user" "$status")
+    done
+
+    if ! chosen=$(whiptail --title 'PVE automatic host-console login' \
+        --checklist 'Select users allowed to auto-login to the host console:' \
+        20 78 12 --separate-output "${checklist_args[@]}" 3>&1 1>&2 2>&3); then
+        return 0
+    fi
+
+    selected=()
+    if [ -n "$chosen" ]; then
+        mapfile -t selected <<< "$chosen"
+    fi
+
+    if ! whiptail --title 'Confirm cluster application' --yesno \
+        "Apply the selected users to this node and all cluster nodes?\n\n${chosen:-No users selected}" \
+        12 78; then
+        return 0
+    fi
+
+    write_state "${selected[@]}"
+    apply_all
+}
+
+menu() {
+    require_root
+    bootstrap_state
+    if command -v whiptail >/dev/null 2>&1; then
+        whiptail_menu
+    else
+        warn "whiptail not found; using the text menu fallback"
+        text_menu
+    fi
 }
 
 disable_all() {

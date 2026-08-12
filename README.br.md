@@ -29,6 +29,7 @@ código e teste primeiro em um nó não crítico.
 - acesso root;
 - usuários PAM locais com shell de login válido;
 - `perl`, `systemctl` e `ssh` para replicação;
+- `whiptail` é opcional; sem ele o script usa um menu textual de fallback;
 - SSH root sem senha entre os nós para usar `--apply-all`.
 
 ## Instalação
@@ -53,6 +54,9 @@ pve-auto-login --apply-local   # somente este nó
 pve-auto-login --apply-all     # todos os nós do cluster
 pve-auto-login --status        # consultar estado
 ```
+
+O menu usa `whiptail` quando disponível e volta automaticamente para o menu
+textual quando o pacote não está instalado.
 
 ## Segurança em upgrades
 
