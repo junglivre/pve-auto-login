@@ -1,0 +1,298 @@
+#!/usr/bin/env bash
+set -u -o pipefail
+
+# pve-auto-login: manage an opt-in local PAM allowlist for PVE host consoles.
+
+STATE_FILE=${PVE_AUTO_LOGIN_STATE_FILE:-/etc/pve/pve-auto-login.conf}
+TARGET_FILE=${PVE_AUTO_LOGIN_TARGET:-/usr/share/perl5/PVE/API2/Nodes.pm}
+COMMAND_PATH=${PVE_AUTO_LOGIN_COMMAND:-/usr/local/sbin/pve-auto-login}
+BACKUP_FILE="${TARGET_FILE}.pve-auto-login.orig"
+QUIET=0
+
+log() { [ "$QUIET" -eq 1 ] || printf '%s\n' "$*"; }
+warn() { printf 'pve-auto-login: warning: %s\n' "$*" >&2; }
+die() { printf 'pve-auto-login: error: %s\n' "$*" >&2; exit 1; }
+
+require_root() {
+    if [ "$(id -u)" -ne 0 ] && [ "${PVE_AUTO_LOGIN_TESTING:-0}" != 1 ]; then
+        die "this command must run as root"
+    fi
+}
+
+valid_username() {
+    case "$1" in
+        *@pam) [[ "$1" =~ ^[A-Za-z0-9_.-]+@pam$ ]] || return 1 ;;
+        *) return 1 ;;
+    esac
+    getent passwd "${1%@pam}" >/dev/null 2>&1
+}
+
+local_pam_users() {
+    getent passwd | awk -F: '$3 >= 1000 && $7 !~ /(nologin|false)$/ { print $1 "@pam" }'
+}
+
+read_state() {
+    [ -f "$STATE_FILE" ] || return 0
+    awk '!/^[[:space:]]*#/ && NF { print $1 }' "$STATE_FILE"
+}
+
+write_state() {
+    local tmp user
+    mkdir -p "$(dirname "$STATE_FILE")"
+    tmp=$(mktemp "${STATE_FILE}.tmp.XXXXXX") || die "cannot create state file"
+    {
+        printf '%s\n' '# Managed by pve-auto-login. One local PAM user per line.'
+        printf '%s\n' '# Do not edit while pve-auto-login is running.'
+        for user in "$@"; do printf '%s\n' "$user"; done | sort -u
+    } > "$tmp"
+    chmod 0640 "$tmp"
+    mv -f "$tmp" "$STATE_FILE"
+}
+
+enabled_users() {
+    local user
+    while read -r user; do
+        [ -n "$user" ] || continue
+        if [ "$user" = "root@pam" ]; then
+            warn "root@pam is built in and is not managed by the allowlist"
+            continue
+        fi
+        if valid_username "$user"; then
+            printf '%s\n' "$user"
+        else
+            warn "ignoring missing or invalid PAM user in state: $user"
+        fi
+    done < <(read_state)
+}
+
+bootstrap_state() {
+    [ -e "$STATE_FILE" ] && return 0
+    [ -f "$TARGET_FILE" ] || die "target file not found: $TARGET_FILE"
+
+    local discovered
+    discovered=$(perl -ne 'while (/\$user\s+ne\s+\x27([A-Za-z0-9_.-]+\@pam)\x27/g) { print "$1\n" }' "$TARGET_FILE" | sort -u | grep -vx 'root@pam' || true)
+    if [ -n "$discovered" ]; then
+        mapfile -t discovered_users <<< "$discovered"
+        write_state "${discovered_users[@]}"
+        log "Imported existing PAM exceptions into $STATE_FILE"
+    else
+        write_state
+    fi
+}
+
+cluster_nodes() {
+    command -v pvecm >/dev/null 2>&1 || return 0
+    pvecm nodes 2>/dev/null | awk '$1 ~ /^[0-9]+$/ { node=$(NF); if (node == "(local)") node=$(NF-1); print node }' | sort -u
+}
+
+user_checks() {
+    local user checks=''
+    for user in root@pam "$@"; do
+        [ -n "$checks" ] && checks+=" && "
+        checks+="\$user ne '$user'"
+    done
+    printf '%s' "$checks"
+}
+
+user_message() {
+    local user message=''
+    for user in root@pam "$@"; do
+        [ -n "$message" ] && message+=" && "
+        message+="user != $user"
+    done
+    printf '%s' "$message"
+}
+
+patch_target() {
+    local tmp checks message changed=0
+    mapfile -t users < <(enabled_users)
+    checks=$(user_checks "${users[@]}")
+    message=$(user_message "${users[@]}")
+    tmp=$(mktemp "${TARGET_FILE}.tmp.XXXXXX") || die "cannot create target temporary file"
+
+    if ! awk -v checks="$checks" -v message="$message" '
+        function indent(line) {
+            sub(/[^ \t].*$/, "", line);
+            return line;
+        }
+        {
+            compatible = $0 ~ /defined\([$]param->\{cmd\}\)/ &&
+                $0 ~ /[$]param->\{cmd\}[^)]*ne[^)]*\x27login\x27/ &&
+                $0 ~ /[$]user[[:space:]]+ne[[:space:]]+\x27root@pam\x27/;
+            if (compatible) {
+                original = $0;
+                if (getline nextline <= 0 || nextline !~ /raise_perm_exc\(/) {
+                    print original;
+                    if (nextline != "") print nextline;
+                    next;
+                }
+                prefix = indent(original);
+                printf "%sif (defined($param->{cmd}) && $param->{cmd} ne \x27login\x27 && %s) {\n", prefix, checks;
+                printf "%s    raise_perm_exc(\x27%s\x27);\n", prefix, message;
+                count++;
+                next;
+            }
+            print;
+        }
+        END {
+            if (count != 2) {
+                printf "expected exactly two compatible console authorization blocks, found %d\n", count > "/dev/stderr";
+                exit 2;
+            }
+        }
+    ' "$TARGET_FILE" > "$tmp"; then
+        rm -f "$tmp"
+        die "Nodes.pm structure is not recognized; no changes were made"
+    fi
+
+    if ! perl -c "$tmp" >/dev/null 2>&1; then
+        rm -f "$tmp"
+        die "generated Nodes.pm failed Perl syntax validation; no changes were made"
+    fi
+
+    if cmp -s "$TARGET_FILE" "$tmp"; then
+        rm -f "$tmp"
+        return 0
+    fi
+
+    if [ ! -e "$BACKUP_FILE" ]; then
+        cp -p "$TARGET_FILE" "$BACKUP_FILE" || { rm -f "$tmp"; die "cannot create backup $BACKUP_FILE"; }
+    fi
+    cp --preserve=mode,ownership,timestamps "$tmp" "$TARGET_FILE"
+    rm -f "$tmp"
+    changed=1
+
+    if [ "$changed" -eq 1 ]; then
+        systemctl restart pvedaemon.service pveproxy.service
+        log "Applied console-login allowlist: ${users[*]:-(none)}"
+    fi
+}
+
+apply_local() {
+    require_root
+    [ -f "$TARGET_FILE" ] || die "target file not found: $TARGET_FILE"
+    bootstrap_state
+    patch_target
+}
+
+apply_all() {
+    require_root
+    apply_local
+    local node local_node failed=0
+    local_node=$(hostname -s)
+    while read -r node; do
+        [ -n "$node" ] || continue
+        [ "$node" = "$local_node" ] && continue
+        log "Applying allowlist on $node"
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "root@$node" "$COMMAND_PATH --apply-local --quiet"; then
+            warn "failed to apply on $node"
+            failed=1
+        fi
+    done < <(cluster_nodes)
+    return "$failed"
+}
+
+show_status() {
+    bootstrap_state
+    printf 'State file: %s\n' "$STATE_FILE"
+    printf 'Target: %s\n' "$TARGET_FILE"
+    printf 'Enabled local PAM users:\n'
+    mapfile -t status_users < <(enabled_users)
+    if [ "${#status_users[@]}" -eq 0 ]; then
+        printf '  (none)\n'
+    else
+        printf '  %s\n' "${status_users[@]}"
+    fi
+    if perl -c "$TARGET_FILE" >/dev/null 2>&1; then
+        printf 'Perl syntax: valid\n'
+    else
+        printf 'Perl syntax: INVALID\n'
+    fi
+}
+
+menu() {
+    require_root
+    bootstrap_state
+    local -a users selected candidates
+    local choice index user
+    mapfile -t selected < <(read_state)
+    mapfile -t candidates < <({ local_pam_users; printf '%s\n' "${selected[@]}"; } | sed '/^$/d' | sort -u)
+    [ "${#candidates[@]}" -gt 0 ] || die "no local PAM users with a valid login shell were found"
+
+    while :; do
+        printf '\nPVE automatic host-console login\n\n'
+        for index in "${!candidates[@]}"; do
+            user=${candidates[$index]}
+            if printf '%s\n' "${selected[@]}" | grep -qxF "$user"; then
+                printf '  %d) [x] %s\n' "$((index + 1))" "$user"
+            else
+                printf '  %d) [ ] %s\n' "$((index + 1))" "$user"
+            fi
+        done
+        printf '\nChoose a number to toggle, or A to apply to the cluster, Q to quit: '
+        read -r choice || exit 0
+        case "$choice" in
+            [Qq]) exit 0 ;;
+            [Aa]) write_state "${selected[@]}"; apply_all; exit $? ;;
+            ''|*[!0-9]*) printf 'Invalid choice.\n' ;;
+            *)
+                index=$((choice - 1))
+                if [ "$index" -lt 0 ] || [ "$index" -ge "${#candidates[@]}" ]; then
+                    printf 'Invalid choice.\n'
+                    continue
+                fi
+                user=${candidates[$index]}
+                if printf '%s\n' "${selected[@]}" | grep -qxF "$user"; then
+                    mapfile -t selected < <(printf '%s\n' "${selected[@]}" | grep -vxF "$user" || true)
+                else
+                    selected+=("$user")
+                fi
+                ;;
+        esac
+    done
+}
+
+disable_all() {
+    require_root
+    write_state
+    apply_all
+}
+
+usage() {
+    cat <<'EOF'
+Usage: pve-auto-login [OPTION]
+
+  (no option)       Open the interactive user menu
+  --status          Show the shared state and target validation status
+  --apply-local     Apply the state on this node only
+  --apply-all       Apply the state to this node and cluster peers
+  --disable-all     Clear the allowlist and apply it to the cluster
+  --quiet           Suppress successful-operation messages
+  --help            Show this help
+EOF
+}
+
+main() {
+    local mode=menu arg
+    for arg in "$@"; do
+        case "$arg" in
+            --status) mode=status ;;
+            --apply-local) mode=local ;;
+            --apply-all) mode=all ;;
+            --disable-all) mode=disable ;;
+            --quiet) QUIET=1 ;;
+            --help|-h) usage; return 0 ;;
+            *) die "unknown option: $arg" ;;
+        esac
+    done
+
+    case "$mode" in
+        menu) menu ;;
+        status) require_root; show_status ;;
+        local) apply_local ;;
+        all) apply_all ;;
+        disable) disable_all ;;
+    esac
+}
+
+main "$@"
