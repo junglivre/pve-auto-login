@@ -5,7 +5,6 @@ set -u -o pipefail
 
 STATE_FILE=${PVE_AUTO_LOGIN_STATE_FILE:-/etc/pve/pve-auto-login.conf}
 TARGET_FILE=${PVE_AUTO_LOGIN_TARGET:-/usr/share/perl5/PVE/API2/Nodes.pm}
-COMMAND_PATH=${PVE_AUTO_LOGIN_COMMAND:-/usr/local/sbin/pve-auto-login}
 BACKUP_FILE="${TARGET_FILE}.pve-auto-login.orig"
 QUIET=0
 
@@ -184,7 +183,10 @@ apply_all() {
         [ -n "$node" ] || continue
         [ "$node" = "$local_node" ] && continue
         log "Applying allowlist on $node"
-        if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "root@$node" "$COMMAND_PATH --apply-local --quiet"; then
+        # The remote node may not have the helper installed yet. Send this
+        # exact version over SSH so cluster application is self-contained.
+        if ! ssh -o BatchMode=yes -o ConnectTimeout=8 "root@$node" \
+            'bash -s -- --apply-local --quiet' < "$0"; then
             warn "failed to apply on $node"
             failed=1
         fi

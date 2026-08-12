@@ -70,7 +70,8 @@ reason and leaves the file untouched.
 
 The hook is intentionally local-only. Each node reapplies its own package
 files when that node is upgraded; normal menu operations use `--apply-all` for
-cluster replication.
+cluster replication. During `--apply-all`, the current script is streamed over
+SSH, so peer nodes do not need to have the helper installed beforehand.
 
 ## Security notes
 

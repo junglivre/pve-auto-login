@@ -56,7 +56,9 @@ pve-auto-login --status        # consultar estado
 ```
 
 O menu usa `whiptail` quando disponível e volta automaticamente para o menu
-textual quando o pacote não está instalado.
+textual quando o pacote não está instalado. Ao aplicar no cluster, o script
+atual é enviado via SSH, então os outros nós não precisam ter o comando
+instalado previamente.
 
 ## Segurança em upgrades
 
