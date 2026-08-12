@@ -55,8 +55,9 @@ pve-auto-login --apply-all     # apply to every cluster node
 pve-auto-login --status        # inspect state
 ```
 
-The menu uses `whiptail` when available and falls back to a plain shell menu
-otherwise. It writes the shared allowlist and then updates the local/remote nodes.
+The menu uses a compact, terminal-sized dark `whiptail` dialog when available
+and falls back to a plain shell menu otherwise. It writes the shared allowlist
+and then updates the local/remote nodes.
 After a successful patch, `pvedaemon` and `pveproxy` are restarted on affected
 nodes so the Perl module is reloaded.
 

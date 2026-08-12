@@ -55,8 +55,9 @@ pve-auto-login --apply-all     # todos os nós do cluster
 pve-auto-login --status        # consultar estado
 ```
 
-O menu usa `whiptail` quando disponível e volta automaticamente para o menu
-textual quando o pacote não está instalado. Ao aplicar no cluster, o script
+O menu usa uma janela escura e compacta, dimensionada conforme o terminal,
+quando `whiptail` está disponível, e volta automaticamente para o menu textual
+quando o pacote não está instalado. Ao aplicar no cluster, o script
 atual é enviado via SSH, então os outros nós não precisam ter o comando
 instalado previamente.
 

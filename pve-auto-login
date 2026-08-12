@@ -255,6 +255,7 @@ text_menu() {
 whiptail_menu() {
     local -a users selected candidates checklist_args
     local chosen index user status
+    local columns lines width height list_height max_width max_height
     bootstrap_state
     mapfile -t selected < <(read_state)
     mapfile -t candidates < <({ local_pam_users; printf '%s\n' "${selected[@]}"; } | sed '/^$/d' | sort -u)
@@ -270,9 +271,28 @@ whiptail_menu() {
         checklist_args+=("$user" "Local PAM user" "$status")
     done
 
+    # Keep the dialog compact for a few users, but allow it to grow with the
+    # terminal and the number of entries. Existing NEWT_COLORS is respected.
+    export NEWT_COLORS="${NEWT_COLORS:-root=white,black,window=white,black,border=white,black,shadow=black,black,title=white,black,button=white,black,actbutton=black,white,compactbutton=white,black,checkbox=white,black,actcheckbox=black,white,entry=white,black,label=white,black,listbox=white,black,actlistbox=black,cyan,actsellistbox=black,cyan,text=white,black,helpline=white,black,roottext=white,black}"
+    columns=$(tput cols 2>/dev/null || printf '80')
+    lines=$(tput lines 2>/dev/null || printf '24')
+    max_width=$((columns - 4))
+    max_height=$((lines - 2))
+    [ "$max_width" -lt 44 ] && max_width=44
+    [ "$max_height" -lt 10 ] && max_height=10
+
+    width=52
+    [ "$max_width" -lt "$width" ] && width=$max_width
+    height=$(( ${#candidates[@]} + 8 ))
+    [ "$height" -lt 10 ] && height=10
+    [ "$height" -gt 18 ] && height=18
+    [ "$height" -gt "$max_height" ] && height=$max_height
+    list_height=$((height - 8))
+    [ "$list_height" -lt 1 ] && list_height=1
+
     if ! chosen=$(whiptail --title 'PVE automatic host-console login' \
         --checklist 'Select users allowed to auto-login to the host console:' \
-        20 78 12 --separate-output "${checklist_args[@]}" 3>&1 1>&2 2>&3); then
+        "$height" "$width" "$list_height" --separate-output "${checklist_args[@]}" 3>&1 1>&2 2>&3); then
         return 0
     fi
 
@@ -283,7 +303,7 @@ whiptail_menu() {
 
     if ! whiptail --title 'Confirm cluster application' --yesno \
         "Apply the selected users to this node and all cluster nodes?\n\n${chosen:-No users selected}" \
-        12 78; then
+        10 "$width"; then
         return 0
     fi
 
